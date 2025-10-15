@@ -17,6 +17,7 @@ import json
 # グローバル設定
 LED_PIN = 6  # NeoPixelの接続ピン
 NUM_LEDS = 1  # LEDの数
+DEVICE_ID = 1  # デバイス識別番号（1-99）複数台使用時は各デバイスで変更してください
 
 class PenlightController:
     """
@@ -160,14 +161,16 @@ class BluetoothService:
         last_blink_time (int): 最後の点滅更新時刻 (ms)
     """
 
-    def __init__(self, penlight_controller):
+    def __init__(self, penlight_controller, device_id=1):
         """
         BluetoothServiceの初期化
 
         Args:
             penlight_controller (PenlightController): 制御対象のペンライトコントローラー
+            device_id (int): デバイス識別番号（1-99）
         """
         self.penlight = penlight_controller
+        self.device_id = device_id
         self.ble = bluetooth.BLE()
         self.ble.active(True)
         self.ble.irq(self._irq)
@@ -205,8 +208,8 @@ class BluetoothService:
             conn_handle, addr_type, addr = data
             self.connections.add(conn_handle)
             self.is_connected = True
-            # 接続されたら点滅を止めて消灯
-            self.penlight.clear_leds()
+            # 接続されたらデフォルトカラー（赤）で点灯
+            self.penlight.set_color(255, 0, 0)
             print(f"Device connected: {ubinascii.hexlify(addr).decode()}")
 
         elif event == 2:  # _IRQ_CENTRAL_DISCONNECT
@@ -249,16 +252,16 @@ class BluetoothService:
         """
         BLEアドバタイジングの開始
 
-        デバイス名 "Penlight" でBLEアドバタイジングを開始し、
+        デバイス名 "Penlight-{device_id}" でBLEアドバタイジングを開始し、
         他のデバイスから検出可能にします。
         """
-        name = b'Penlight'
+        name = f'Penlight-{self.device_id}'.encode('utf-8')
         adv_data = bytearray()
         adv_data.extend(struct.pack('BB', len(name) + 1, 0x09))
         adv_data.extend(name)
 
         self.ble.gap_advertise(100, adv_data, resp_data=None, connectable=True)
-        print("Advertising as 'Penlight'")
+        print(f"Advertising as 'Penlight-{self.device_id}'")
 
     def _handle_write(self, value_handle, value):
         """
@@ -382,9 +385,10 @@ def main():
     penlight.clear_leds()
 
     # Bluetoothサービス開始
-    bt_service = BluetoothService(penlight)
+    bt_service = BluetoothService(penlight, DEVICE_ID)
 
     print("Ready for connections!")
+    print(f"Device ID: {DEVICE_ID}")
     print("LED will blink blue until connected...")
 
     # メインループ
