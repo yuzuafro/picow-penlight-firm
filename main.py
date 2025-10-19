@@ -19,7 +19,7 @@ LED_PIN = 6  # NeoPixelの接続ピン
 NUM_LEDS = 1  # LEDの数
 DEVICE_ID = 1  # デバイス識別番号（1-99）複数台使用時は各デバイスで変更してください
 
-class PenlightController:
+class ColorlightController:
     """
     ペンライトLED制御クラス
 
@@ -38,7 +38,7 @@ class PenlightController:
 
     def __init__(self, led_pin=6, num_leds=1):
         """
-        PenlightControllerの初期化
+        ColorlightControllerの初期化
 
         Args:
             led_pin (int): LEDのデータ線を接続するGPIOピン番号（デフォルト: 6）
@@ -56,10 +56,63 @@ class PenlightController:
             (0, 255, 0),    # 緑
             (0, 0, 255),    # 青
             (128, 0, 128),  # 紫
-            (255, 192, 203) # ピンク
+            (255, 20, 147)  # ピンク (Deep Pink)
         ]
+        # パターン3用のシームレスなグラデーション色（96段階の虹色）
+        self.gradient_colors = self._generate_rainbow_gradient(96)
         self.pattern_index = 0
         self.last_pattern_update = time.ticks_ms()
+
+    def _generate_rainbow_gradient(self, steps):
+        """
+        虹色のグラデーションを生成
+
+        Args:
+            steps (int): グラデーションのステップ数
+
+        Returns:
+            list: RGB色のタプルのリスト
+        """
+        colors = []
+        for i in range(steps):
+            # HSVカラーの色相(Hue)を0-360度で変化させる
+            hue = (i * 360) // steps
+            r, g, b = self._hsv_to_rgb(hue, 100, 100)
+            colors.append((r, g, b))
+        return colors
+
+    def _hsv_to_rgb(self, h, s, v):
+        """
+        HSV色空間からRGB色空間に変換
+
+        Args:
+            h (int): 色相 (0-360)
+            s (int): 彩度 (0-100)
+            v (int): 明度 (0-100)
+
+        Returns:
+            tuple: (R, G, B) それぞれ0-255
+        """
+        s = s / 100.0
+        v = v / 100.0
+        c = v * s
+        x = c * (1 - abs(((h / 60.0) % 2) - 1))
+        m = v - c
+
+        if 0 <= h < 60:
+            r, g, b = c, x, 0
+        elif 60 <= h < 120:
+            r, g, b = x, c, 0
+        elif 120 <= h < 180:
+            r, g, b = 0, c, x
+        elif 180 <= h < 240:
+            r, g, b = 0, x, c
+        elif 240 <= h < 300:
+            r, g, b = x, 0, c
+        else:
+            r, g, b = c, 0, x
+
+        return (int((r + m) * 255), int((g + m) * 255), int((b + m) * 255))
 
     def set_color(self, r, g, b):
         """
@@ -93,7 +146,7 @@ class PenlightController:
             pattern_type (int): パターン番号（1-3）
                 1: 順次色変化
                 2: 点滅しながら色変化
-                3: 高速色変化
+                3: シームレスな虹色グラデーション（96段階）
         """
         self.auto_mode = True
         self.pattern_type = pattern_type
@@ -114,13 +167,17 @@ class PenlightController:
         自動制御モードの更新処理
 
         メインループから定期的に呼び出され、自動制御モードが有効な場合に
-        パターンに応じてLEDの色を更新します。約1秒間隔で色が変化します。
+        パターンに応じてLEDの色を更新します。
+        パターン1・2は1秒間隔、パターン3は0.5秒間隔で色が変化します。
         """
         if not self.auto_mode:
             return
 
         current_time = time.ticks_ms()
-        if time.ticks_diff(current_time, self.last_pattern_update) >= 1000:  # 1秒間隔
+        # パターン3は0.5秒間隔、それ以外は1秒間隔
+        interval = 500 if self.pattern_type == 3 else 1000
+
+        if time.ticks_diff(current_time, self.last_pattern_update) >= interval:
             if self.pattern_type == 1:
                 # パターン1: 順次色変化
                 color = self.pattern_colors[self.pattern_index]
@@ -135,10 +192,10 @@ class PenlightController:
                     self.clear_leds()
                 self.pattern_index += 1
             elif self.pattern_type == 3:
-                # パターン3: 高速変化
-                color = self.pattern_colors[self.pattern_index]
+                # パターン3: シームレスな虹色グラデーション
+                color = self.gradient_colors[self.pattern_index]
                 self.set_color(color[0], color[1], color[2])
-                self.pattern_index = (self.pattern_index + 1) % len(self.pattern_colors)
+                self.pattern_index = (self.pattern_index + 1) % len(self.gradient_colors)
 
             self.last_pattern_update = current_time
 
@@ -150,7 +207,7 @@ class BluetoothService:
     コマンドと色情報の送受信を行います。
 
     Attributes:
-        penlight (PenlightController): 制御対象のペンライトコントローラー
+        penlight (ColorlightController): 制御対象のペンライトコントローラー
         ble (bluetooth.BLE): BLEオブジェクト
         SERVICE_UUID (bluetooth.UUID): BLEサービスのUUID
         COLOR_CHAR_UUID (bluetooth.UUID): 色制御用キャラクタリスティックのUUID
@@ -166,7 +223,7 @@ class BluetoothService:
         BluetoothServiceの初期化
 
         Args:
-            penlight_controller (PenlightController): 制御対象のペンライトコントローラー
+            penlight_controller (ColorlightController): 制御対象のペンライトコントローラー
             device_id (int): デバイス識別番号（1-99）
         """
         self.penlight = penlight_controller
@@ -216,6 +273,10 @@ class BluetoothService:
             conn_handle, addr_type, addr = data
             self.connections.discard(conn_handle)
             self.is_connected = len(self.connections) > 0
+            # 切断時に即座にLEDを消灯
+            if not self.is_connected:
+                self.penlight.stop_auto_mode()
+                self.penlight.clear_leds()
             print(f"Device disconnected: {ubinascii.hexlify(addr).decode()}")
             self._advertise()
 
@@ -252,16 +313,16 @@ class BluetoothService:
         """
         BLEアドバタイジングの開始
 
-        デバイス名 "Penlight-{device_id}" でBLEアドバタイジングを開始し、
+        デバイス名 "Colorlight-{device_id}" でBLEアドバタイジングを開始し、
         他のデバイスから検出可能にします。
         """
-        name = f'Penlight-{self.device_id}'.encode('utf-8')
+        name = f'Colorlight-{self.device_id}'.encode('utf-8')
         adv_data = bytearray()
         adv_data.extend(struct.pack('BB', len(name) + 1, 0x09))
         adv_data.extend(name)
 
         self.ble.gap_advertise(100, adv_data, resp_data=None, connectable=True)
-        print(f"Advertising as 'Penlight-{self.device_id}'")
+        print(f"Advertising as 'Colorlight-{self.device_id}'")
 
     def _handle_write(self, value_handle, value):
         """
@@ -369,9 +430,9 @@ def main():
     Raises:
         KeyboardInterrupt: Ctrl+Cで正常終了
     """
-    print("Penlight Controller starting...")
+    print("Colorlight Controller starting...")
 
-    penlight = PenlightController(LED_PIN, NUM_LEDS)
+    penlight = ColorlightController(LED_PIN, NUM_LEDS)
     penlight.clear_leds()
 
     # 起動時のテスト点灯

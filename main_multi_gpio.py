@@ -13,7 +13,10 @@ LED_STRIPS = [
     {'pin': 7, 'num_leds': 8},   # GPIO7に8個
 ]
 
-class MultiStripPenlightController:
+# グローバル設定
+DEVICE_ID = 1  # デバイス識別番号（1-99）複数台使用時は各デバイスで変更してください
+
+class MultiStripColorlightController:
     def __init__(self, led_strips):
         """
         複数のLEDストリップを制御
@@ -39,10 +42,63 @@ class MultiStripPenlightController:
             (0, 255, 0),    # 緑
             (0, 0, 255),    # 青
             (128, 0, 128),  # 紫
-            (255, 192, 203) # ピンク
+            (255, 20, 147)  # ピンク (Deep Pink)
         ]
+        # パターン3用のシームレスなグラデーション色（96段階の虹色）
+        self.gradient_colors = self._generate_rainbow_gradient(96)
         self.pattern_index = 0
         self.last_pattern_update = time.ticks_ms()
+
+    def _generate_rainbow_gradient(self, steps):
+        """
+        虹色のグラデーションを生成
+
+        Args:
+            steps (int): グラデーションのステップ数
+
+        Returns:
+            list: RGB色のタプルのリスト
+        """
+        colors = []
+        for i in range(steps):
+            # HSVカラーの色相(Hue)を0-360度で変化させる
+            hue = (i * 360) // steps
+            r, g, b = self._hsv_to_rgb(hue, 100, 100)
+            colors.append((r, g, b))
+        return colors
+
+    def _hsv_to_rgb(self, h, s, v):
+        """
+        HSV色空間からRGB色空間に変換
+
+        Args:
+            h (int): 色相 (0-360)
+            s (int): 彩度 (0-100)
+            v (int): 明度 (0-100)
+
+        Returns:
+            tuple: (R, G, B) それぞれ0-255
+        """
+        s = s / 100.0
+        v = v / 100.0
+        c = v * s
+        x = c * (1 - abs(((h / 60.0) % 2) - 1))
+        m = v - c
+
+        if 0 <= h < 60:
+            r, g, b = c, x, 0
+        elif 60 <= h < 120:
+            r, g, b = x, c, 0
+        elif 120 <= h < 180:
+            r, g, b = 0, c, x
+        elif 180 <= h < 240:
+            r, g, b = 0, x, c
+        elif 240 <= h < 300:
+            r, g, b = x, 0, c
+        else:
+            r, g, b = c, 0, x
+
+        return (int((r + m) * 255), int((g + m) * 255), int((b + m) * 255))
 
     def set_color(self, r, g, b):
         """全ストリップの全LEDを指定色に設定"""
@@ -77,12 +133,18 @@ class MultiStripPenlightController:
         self.clear_leds()
 
     def update_auto_mode(self):
-        """自動制御モードの更新処理"""
+        """
+        自動制御モードの更新処理
+        パターン3は0.5秒間隔、それ以外は1秒間隔で色が変化します。
+        """
         if not self.auto_mode:
             return
 
         current_time = time.ticks_ms()
-        if time.ticks_diff(current_time, self.last_pattern_update) >= 1000:  # 1秒間隔
+        # パターン3は0.5秒間隔、それ以外は1秒間隔
+        interval = 500 if self.pattern_type == 3 else 1000
+
+        if time.ticks_diff(current_time, self.last_pattern_update) >= interval:
             if self.pattern_type == 1:
                 # パターン1: 順次色変化
                 color = self.pattern_colors[self.pattern_index]
@@ -97,10 +159,10 @@ class MultiStripPenlightController:
                     self.clear_leds()
                 self.pattern_index += 1
             elif self.pattern_type == 3:
-                # パターン3: 高速変化
-                color = self.pattern_colors[self.pattern_index]
+                # パターン3: シームレスな虹色グラデーション
+                color = self.gradient_colors[self.pattern_index]
                 self.set_color(color[0], color[1], color[2])
-                self.pattern_index = (self.pattern_index + 1) % len(self.pattern_colors)
+                self.pattern_index = (self.pattern_index + 1) % len(self.gradient_colors)
             elif self.pattern_type == 4:
                 # パターン4: 交互点灯（複数ストリップ用）
                 for i, strip in enumerate(self.strips):
@@ -114,8 +176,9 @@ class MultiStripPenlightController:
             self.last_pattern_update = current_time
 
 class BluetoothService:
-    def __init__(self, penlight_controller):
+    def __init__(self, penlight_controller, device_id=1):
         self.penlight = penlight_controller
+        self.device_id = device_id
         self.ble = bluetooth.BLE()
         self.ble.active(True)
         self.ble.irq(self._irq)
@@ -167,13 +230,13 @@ class BluetoothService:
         ((self.color_handle, self.control_handle),) = self.ble.gatts_register_services(services)
 
     def _advertise(self):
-        name = b'Penlight'
+        name = f'Colorlight-{self.device_id}'.encode('utf-8')
         adv_data = bytearray()
         adv_data.extend(struct.pack('BB', len(name) + 1, 0x09))
         adv_data.extend(name)
 
         self.ble.gap_advertise(100, adv_data, resp_data=None, connectable=True)
-        print("Advertising as 'Penlight'")
+        print(f"Advertising as 'Colorlight-{self.device_id}'")
 
     def _handle_write(self, value_handle, value):
         try:
@@ -214,12 +277,12 @@ class BluetoothService:
             print(f"Error handling command '{command}': {e}")
 
 def main():
-    print("Multi-Strip Penlight Controller starting...")
+    print("Multi-Strip Colorlight Controller starting...")
     print(f"Configured {len(LED_STRIPS)} LED strips:")
     for i, config in enumerate(LED_STRIPS):
         print(f"  Strip {i}: GPIO{config['pin']} with {config['num_leds']} LEDs")
 
-    penlight = MultiStripPenlightController(LED_STRIPS)
+    penlight = MultiStripColorlightController(LED_STRIPS)
     penlight.clear_leds()
 
     # 起動時のテスト点灯（全ストリップ同時）
@@ -242,9 +305,10 @@ def main():
     penlight.clear_leds()
 
     # Bluetoothサービス開始
-    bt_service = BluetoothService(penlight)
+    bt_service = BluetoothService(penlight, DEVICE_ID)
 
     print("\nReady for connections!")
+    print(f"Device ID: {DEVICE_ID}")
 
     # メインループ
     while True:
