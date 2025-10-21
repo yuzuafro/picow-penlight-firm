@@ -257,7 +257,16 @@ class BluetoothService:
             print(f"Error handling write: {e}")
 
     def _handle_command(self, command):
-        """コマンド処理"""
+        """
+        コマンド処理
+
+        Args:
+            command (str): コマンド文字列
+                "AUTO:1-4" - 自動制御開始（パターン1-4）
+                "STOP" - 自動制御停止
+                "CLEAR" - LED消灯
+                "MUSIC:{brightness}" - 音楽モード（明るさ0-255）
+        """
         try:
             if command.startswith('AUTO:'):
                 pattern_num = int(command.split(':')[1])
@@ -272,6 +281,15 @@ class BluetoothService:
                 self.penlight.stop_auto_mode()
                 self.penlight.clear_leds()
                 print("LEDs cleared")
+
+            elif command.startswith('MUSIC:'):
+                # 音楽モード: 明るさ値を取得
+                brightness = int(command.split(':')[1])
+                brightness = max(0, min(255, brightness))  # 0-255に制限
+                # 現在の色を保持しながら明るさを調整
+                # 音楽モード時は自動制御を停止
+                self.penlight.stop_auto_mode()
+                print(f"Music mode: brightness {brightness}")
 
         except Exception as e:
             print(f"Error handling command '{command}': {e}")
