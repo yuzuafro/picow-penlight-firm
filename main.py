@@ -1,5 +1,5 @@
 """
-Raspberry Pi Pico W ペンライトコントローラー
+Raspberry Pi Pico W カラーライトコントローラー
 
 Web Bluetooth APIを使用してフルカラーLEDを制御するプログラムです。
 色選択モードと自動制御モード（3パターン）をサポートします。
@@ -8,11 +8,9 @@ Web Bluetooth APIを使用してフルカラーLEDを制御するプログラム
 import bluetooth
 import time
 import machine
-from machine import Pin
 import neopixel
 import ubinascii
 import struct
-import json
 
 # グローバル設定
 LED_PIN = 6  # NeoPixelの接続ピン
@@ -21,7 +19,7 @@ DEVICE_ID = 1  # デバイス識別番号（1-99）複数台使用時は各デ�
 
 class ColorlightController:
     """
-    ペンライトLED制御クラス
+    カラーライトLED制御クラス
 
     NeoPixel互換LEDの制御と自動制御パターンの管理を行います。
 
@@ -31,7 +29,8 @@ class ColorlightController:
         current_color (tuple): 現在の色 (R, G, B)
         auto_mode (bool): 自動制御モードのON/OFF
         pattern_type (int): 自動制御のパターン番号 (1-3)
-        pattern_colors (list): 自動制御で使用する色のリスト
+        pattern_colors (list): 自動制御パターン1・2で使用する色のリスト（7色）
+        gradient_colors (list): パターン3用の虹色グラデーション色のリスト（96段階）
         pattern_index (int): 現在のパターンインデックス
         last_pattern_update (int): 最後のパターン更新時刻 (ms)
     """
@@ -144,9 +143,9 @@ class ColorlightController:
 
         Args:
             pattern_type (int): パターン番号（1-3）
-                1: 順次色変化
-                2: 点滅しながら色変化
-                3: シームレスな虹色グラデーション（96段階）
+                1: 順次色変化（7色を1秒ごとに切り替え）
+                2: 点滅パターン（7色を1秒ごとに点灯・消灯を繰り返す）
+                3: シームレスな虹色グラデーション（96段階を0.5秒ごとに切り替え）
         """
         self.auto_mode = True
         self.pattern_type = pattern_type
@@ -168,7 +167,11 @@ class ColorlightController:
 
         メインループから定期的に呼び出され、自動制御モードが有効な場合に
         パターンに応じてLEDの色を更新します。
-        パターン1・2は1秒間隔、パターン3は0.5秒間隔で色が変化します。
+
+        更新間隔:
+            - パターン1: 1秒間隔で7色を順次切り替え
+            - パターン2: 1秒間隔で7色の点灯・消灯を繰り返し
+            - パターン3: 0.5秒間隔で96段階の虹色グラデーションを表示
         """
         if not self.auto_mode:
             return
@@ -203,30 +206,33 @@ class BluetoothService:
     """
     Bluetooth Low Energy (BLE) サービス管理クラス
 
-    Web Bluetooth APIとの通信を管理し、ペンライトコントローラーへの
+    Web Bluetooth APIとの通信を管理し、カラーライトコントローラーへの
     コマンドと色情報の送受信を行います。
 
     Attributes:
-        penlight (ColorlightController): 制御対象のペンライトコントローラー
+        colorlight (ColorlightController): 制御対象のカラーライトコントローラー
+        device_id (int): デバイス識別番号（1-99）
         ble (bluetooth.BLE): BLEオブジェクト
         SERVICE_UUID (bluetooth.UUID): BLEサービスのUUID
         COLOR_CHAR_UUID (bluetooth.UUID): 色制御用キャラクタリスティックのUUID
         CONTROL_CHAR_UUID (bluetooth.UUID): コマンド制御用キャラクタリスティックのUUID
+        color_handle (int): 色制御キャラクタリスティックのハンドル
+        control_handle (int): コマンド制御キャラクタリスティックのハンドル
         connections (set): 接続中のデバイスのハンドルセット
         is_connected (bool): 接続状態フラグ
         blink_state (bool): 待機時の点滅状態
         last_blink_time (int): 最後の点滅更新時刻 (ms)
     """
 
-    def __init__(self, penlight_controller, device_id=1):
+    def __init__(self, colorlight_controller, device_id=1):
         """
         BluetoothServiceの初期化
 
         Args:
-            penlight_controller (ColorlightController): 制御対象のペンライトコントローラー
+            colorlight_controller (ColorlightController): 制御対象のカラーライトコントローラー
             device_id (int): デバイス識別番号（1-99）
         """
-        self.penlight = penlight_controller
+        self.colorlight = colorlight_controller
         self.device_id = device_id
         self.ble = bluetooth.BLE()
         self.ble.active(True)
@@ -266,7 +272,7 @@ class BluetoothService:
             self.connections.add(conn_handle)
             self.is_connected = True
             # 接続されたらデフォルトカラー（赤）で点灯
-            self.penlight.set_color(255, 0, 0)
+            self.colorlight.set_color(255, 0, 0)
             print(f"Device connected: {ubinascii.hexlify(addr).decode()}")
 
         elif event == 2:  # _IRQ_CENTRAL_DISCONNECT
@@ -275,8 +281,8 @@ class BluetoothService:
             self.is_connected = len(self.connections) > 0
             # 切断時に即座にLEDを消灯
             if not self.is_connected:
-                self.penlight.stop_auto_mode()
-                self.penlight.clear_leds()
+                self.colorlight.stop_auto_mode()
+                self.colorlight.clear_leds()
             print(f"Device disconnected: {ubinascii.hexlify(addr).decode()}")
             self._advertise()
 
@@ -340,8 +346,8 @@ class BluetoothService:
                 # Color data: expects 3 bytes (R, G, B)
                 if len(value) >= 3:
                     r, g, b = value[0], value[1], value[2]
-                    self.penlight.stop_auto_mode()
-                    self.penlight.set_color(r, g, b)
+                    self.colorlight.stop_auto_mode()
+                    self.colorlight.set_color(r, g, b)
                     print(f"Color set to RGB({r}, {g}, {b})")
 
             elif value_handle == self.control_handle:
@@ -360,24 +366,28 @@ class BluetoothService:
 
         Args:
             command (str): コマンド文字列
-                "AUTO:1-3" - 自動制御開始（パターン1-3）
-                "STOP" - 自動制御停止
+                "AUTO:1" - パターン1: 順次色変化（7色を1秒ごとに切り替え）
+                "AUTO:2" - パターン2: 点滅パターン（7色を1秒ごとに点灯・消灯）
+                "AUTO:3" - パターン3: 虹色グラデーション（96段階を0.5秒ごと）
+                "STOP" - 自動制御モード停止
                 "CLEAR" - LED消灯
                 "MUSIC:{brightness}" - 音楽モード（明るさ0-255）
+                    ※現在未使用。音楽連動はWebアプリ側で音声解析し、
+                    　COLOR_CHARへRGB値を直接送信する方式で実装済み。
         """
         try:
             if command.startswith('AUTO:'):
                 pattern_num = int(command.split(':')[1])
-                self.penlight.start_auto_mode(pattern_num)
+                self.colorlight.start_auto_mode(pattern_num)
                 print(f"Auto mode started with pattern {pattern_num}")
 
             elif command == 'STOP':
-                self.penlight.stop_auto_mode()
+                self.colorlight.stop_auto_mode()
                 print("Auto mode stopped")
 
             elif command == 'CLEAR':
-                self.penlight.stop_auto_mode()
-                self.penlight.clear_leds()
+                self.colorlight.stop_auto_mode()
+                self.colorlight.clear_leds()
                 print("LEDs cleared")
 
             elif command.startswith('MUSIC:'):
@@ -386,7 +396,7 @@ class BluetoothService:
                 brightness = max(0, min(255, brightness))  # 0-255に制限
                 # 現在の色を保持しながら明るさを調整
                 # 音楽モード時は自動制御を停止
-                self.penlight.stop_auto_mode()
+                self.colorlight.stop_auto_mode()
                 print(f"Music mode: brightness {brightness}")
 
         except Exception as e:
@@ -403,7 +413,7 @@ class BluetoothService:
             接続中または自動制御モード中は点滅しません。
             メインループから定期的に呼び出される必要があります。
         """
-        if self.is_connected or self.penlight.auto_mode:
+        if self.is_connected or self.colorlight.auto_mode:
             # 接続中または自動制御モード中は点滅しない
             return
 
@@ -412,13 +422,13 @@ class BluetoothService:
         if self.blink_state:
             # 点灯中 → 0.1秒後に消灯
             if time.ticks_diff(current_time, self.last_blink_time) >= 100:
-                self.penlight.clear_leds()  # 消灯
+                self.colorlight.clear_leds()  # 消灯
                 self.blink_state = False
                 self.last_blink_time = current_time
         else:
             # 消灯中 → 4.9秒後に点灯
             if time.ticks_diff(current_time, self.last_blink_time) >= 4900:
-                self.penlight.set_color(0, 0, 255)  # 青色点灯
+                self.colorlight.set_color(0, 0, 255)  # 青色点灯
                 self.blink_state = True
                 self.last_blink_time = current_time
 
@@ -426,7 +436,7 @@ def main():
     """
     メインエントリーポイント
 
-    ペンライトコントローラーとBluetoothサービスを初期化し、
+    カラーライトコントローラーとBluetoothサービスを初期化し、
     メインループを実行します。
 
     処理の流れ:
@@ -442,21 +452,21 @@ def main():
     """
     print("Colorlight Controller starting...")
 
-    penlight = ColorlightController(LED_PIN, NUM_LEDS)
-    penlight.clear_leds()
+    colorlight = ColorlightController(LED_PIN, NUM_LEDS)
+    colorlight.clear_leds()
 
     # 起動時のテスト点灯
     print("Testing LEDs...")
-    penlight.set_color(255, 0, 0)  # 赤
+    colorlight.set_color(255, 0, 0)  # 赤
     time.sleep(0.3)
-    penlight.set_color(0, 255, 0)  # 緑
+    colorlight.set_color(0, 255, 0)  # 緑
     time.sleep(0.3)
-    penlight.set_color(0, 0, 255)  # 青
+    colorlight.set_color(0, 0, 255)  # 青
     time.sleep(0.3)
-    penlight.clear_leds()
+    colorlight.clear_leds()
 
     # Bluetoothサービス開始
-    bt_service = BluetoothService(penlight, DEVICE_ID)
+    bt_service = BluetoothService(colorlight, DEVICE_ID)
 
     print("Ready for connections!")
     print(f"Device ID: {DEVICE_ID}")
@@ -468,7 +478,7 @@ def main():
             # 未接続時の青色点滅を更新
             bt_service.update_waiting_blink()
             # 自動制御モードの更新
-            penlight.update_auto_mode()
+            colorlight.update_auto_mode()
             time.sleep(0.1)  # CPU負荷を抑えつつタイミング精度を確保
         except KeyboardInterrupt:
             break
@@ -477,7 +487,7 @@ def main():
             time.sleep(1)
 
     print("Shutting down...")
-    penlight.clear_leds()
+    colorlight.clear_leds()
 
 if __name__ == "__main__":
     main()
